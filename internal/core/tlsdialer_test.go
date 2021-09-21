@@ -31,13 +31,7 @@ func TestDial(t *testing.T) {
 	connector := NewConnector("localhost:8443", "localhost:8080")
 	restServer.Listener = connector
 
-	// It doesn't work with StartTLS because it expects a plain tcp connection from
-	// Listener.Accept. Then it performs TLS handshake on top of this
-	// raw connection. Since we already return a TLS connection from Listener.Accept,
-	// StartTLS will be doing a TLS handshake over a TLS connection and
-	// causes error: first record doesn't look like a handshake.
-	// Look at http/server.go, it wraps the Listener with a tls.NewListener
-	restServer.Start()
+	restServer.StartTLS()
 
 	idleConns := make(chan net.Conn)
 
@@ -55,14 +49,17 @@ func TestDial(t *testing.T) {
 
 		fmt.Println("listening on 8443")
 		wg.Done()
-		conn, err := ln.Accept()
-		if err != nil {
-			log.Println(err)
-			return
-		}
 
-		fmt.Println("accepted incoming conn")
-		idleConns <- conn
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				log.Println(err)
+				return
+			}
+
+			fmt.Println("accepted incoming conn")
+			idleConns <- conn
+		}
 	}()
 
 	dialTLSContext := func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -79,11 +76,25 @@ func TestDial(t *testing.T) {
 		Timeout: 100 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				// RootCAs: caCertPool,
 				InsecureSkipVerify: true,
 			},
-			DialContext:    dialTLSContext,
-			DialTLSContext: dialTLSContext,
+			DialContext: dialTLSContext,
+			DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				c, err := dialTLSContext(ctx, network, addr)
+				if err != nil {
+					return nil, err
+				}
+
+				// Need to wrap with a tls.Client because StartTLS expects a plain tcp connection from
+				// Listener.Accept. Then it performs TLS handshake on top of this
+				// raw connection. Since we already return a TLS connection from Listener.Accept,
+				// StartTLS will be doing a TLS handshake over a TLS connection.
+				// And this is the client end of the outer tls connection.
+				// Look at http/server.go, it wraps the Listener with a tls.NewListener
+				return tls.Client(c, &tls.Config{
+					InsecureSkipVerify: true,
+				}), nil
+			},
 		},
 	}
 
