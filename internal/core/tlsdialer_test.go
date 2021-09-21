@@ -22,10 +22,21 @@ func TestDial(t *testing.T) {
 		w.Write([]byte("world"))
 	})
 
+	cert, err := tls.LoadX509KeyPair("../../server.crt", "../../server.key")
+	if err != nil {
+		log.Println(err)
+		return
+	}
 	restServer := httptest.NewUnstartedServer(mux)
 	connector := NewConnector("localhost:8443", "localhost:8080")
 	restServer.Listener = connector
 
+	// It doesn't work with StartTLS because it expects a plain tcp connection from
+	// Listener.Accept. Then it performs TLS handshake on top of this
+	// raw connection. Since we already return a TLS connection from Listener.Accept,
+	// StartTLS will be doing a TLS handshake over a TLS connection and
+	// causes error: first record doesn't look like a handshake.
+	// Look at http/server.go, it wraps the Listener with a tls.NewListener
 	restServer.Start()
 
 	idleConns := make(chan net.Conn)
@@ -33,12 +44,6 @@ func TestDial(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
-		cert, err := tls.LoadX509KeyPair("../../server.crt", "../../server.key")
-		if err != nil {
-			log.Println(err)
-			return
-		}
-
 		config := &tls.Config{Certificates: []tls.Certificate{cert}}
 		ln, err := tls.Listen("tcp", ":8443", config)
 		if err != nil {
